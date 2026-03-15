@@ -90,7 +90,7 @@ def _call_gemini(image_paths: list, system_prompt: str) -> str:
     response = client.models.generate_content(
         model=config.ANALYSIS_MODEL,
         contents=types.Content(parts=parts, role="user"),
-        config=types.GenerateContentConfig(temperature=0.3, max_output_tokens=4096),
+        config=types.GenerateContentConfig(temperature=0.3, max_output_tokens=16384),
     )
     return response.text
 
