@@ -1,0 +1,9 @@
+# 核心依赖
+google-genai>=0.3.0
+Pillow>=10.0.0
+
+# Web UI (Python 3.9 兼容版本)
+gradio==4.44.1
+
+# 环境变量管理
+python-dotenv>=1.0.0
