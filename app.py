@@ -16,7 +16,7 @@ from core.analyzer import analyze_images
 from core.fusion import fuse_prompt
 from core.generator import generate_image
 from core.utils import setup_logging, get_logger
-from generate_smart_set import _get_style_only_prompt
+from generate_smart_set import _get_intent, _build_rich_style_description
 
 setup_logging()
 logger = get_logger("app")
@@ -168,7 +168,8 @@ def run_smart_set(ref_images, product_img, product_name, aspect):
     log_lines.append("")
     yield [], "\n".join(log_lines), desc
 
-    style_desc = desc[:200] if desc else ""
+    style_info = a_list[0].get("overall_style", {}) if a_list else {}
+    style_text = _build_rich_style_description(style_info, a_list, desc[:500])
     all_results = []
 
     for item in a_list:
@@ -178,37 +179,37 @@ def run_smart_set(ref_images, product_img, product_name, aspect):
         image_type = item.get("image_type", "product_hero")
         category = item.get("design_category", "ecommerce")
 
-        # 风格参考 = 代表图 + 当前图（去重），确保全局风格一致性
         style_refs = list(rep_paths)
         if ref_path not in style_refs:
             style_refs.append(ref_path)
 
-        if has_subject and prod:
-            prompt_text = f"{name} professional {image_type} photography, {style_desc}"
-            try:
+        intent = _get_intent(has_subject, category, image_type, name)
+
+        try:
+            fused_prompt = fuse_prompt(style_text, intent, ref_count=len(style_refs))
+        except Exception as e:
+            log_lines.append(f"  ✗ #{idx} 融合失败: {e}")
+            yield all_results[:], "\n".join(log_lines), desc
+            continue
+
+        try:
+            if has_subject and prod:
                 paths = generate_image(
-                    prompt=prompt_text,
+                    prompt=fused_prompt,
                     style_references=style_refs,
                     product_reference=prod,
                     aspect_ratio=aspect,
                 )
-                all_results.extend(paths)
-                log_lines.append(f"  ✓ #{idx} 风格{len(style_refs)}张+产品图 — {len(paths)} 张")
-            except Exception as e:
-                log_lines.append(f"  ✗ #{idx} 失败: {e}")
-        else:
-            prompt_text = _get_style_only_prompt(category, image_type, name, style_desc)
-            try:
+            else:
                 paths = generate_image(
-                    prompt=prompt_text,
+                    prompt=fused_prompt,
                     style_references=style_refs,
-                    product_reference=None,
                     aspect_ratio=aspect,
                 )
-                all_results.extend(paths)
-                log_lines.append(f"  ✓ #{idx} 风格{len(style_refs)}张(无产品图) — {len(paths)} 张")
-            except Exception as e:
-                log_lines.append(f"  ✗ #{idx} 失败: {e}")
+            all_results.extend(paths)
+            log_lines.append(f"  ✓ #{idx} [{image_type}] — {len(paths)} 张")
+        except Exception as e:
+            log_lines.append(f"  ✗ #{idx} 失败: {e}")
 
         yield all_results[:], "\n".join(log_lines), desc
 

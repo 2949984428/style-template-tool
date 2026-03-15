@@ -18,9 +18,14 @@ def _load_prompt_template():
         return f.read()
 
 
-def fuse_prompt(template_description: str, user_prompt: str) -> str:
+def fuse_prompt(template_description: str, user_prompt: str, ref_count: int = 1) -> str:
     """
-    将模板描述与用户 prompt 融合。
+    将模板描述与用户 prompt 融合为 Sandwich Strategy 三层 prompt。
+
+    Args:
+        template_description: 风格分析文本（含归因信息）
+        user_prompt: 内容意图
+        ref_count: 风格参考图的数量，用于 prompt 中标注 Reference Image 1/2/...
 
     Returns:
         融合后的最终生图 prompt（英文）
@@ -30,12 +35,14 @@ def fuse_prompt(template_description: str, user_prompt: str) -> str:
     if not user_prompt.strip():
         raise FusionError("用户 prompt 不能为空")
 
-    logger.info("融合 prompt (模板 %d 字, 用户 %d 字)", len(template_description), len(user_prompt))
+    logger.info("融合 prompt (模板 %d 字, 用户 %d 字, 参考图 %d 张)", len(template_description), len(user_prompt), ref_count)
     prompt_template = _load_prompt_template()
     full_prompt = prompt_template.replace(
         "{template_description}", template_description
     ).replace(
         "{user_prompt}", user_prompt
+    ).replace(
+        "{ref_count}", str(ref_count)
     )
 
     client = get_client()

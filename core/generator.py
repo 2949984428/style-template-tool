@@ -1,11 +1,8 @@
 """
 阶段3：图片生成器
-直接调用 Gemini REST API 生成图片，绕过 SDK Pydantic 校验限制
+直接调用 Gemini REST API，文+图一起传
 
-对齐官方文档 https://ai.google.dev/gemini-api/docs/image-generation
-- 图片在前、文本指令在后（高保真模式）
-- 支持 image_size (512/1K/2K/4K)
-- 支持 thinking_config (minimal/high)
+关键：prompt 明确区分"学什么"和"不学什么"，防止模型把参考图当素材合成
 """
 
 import os
@@ -30,19 +27,18 @@ def _image_to_inline_data(image_path: str) -> dict:
 
 def generate_image(
     prompt: str,
+    style_references: list = None,
     product_reference: str = None,
     aspect_ratio: str = None,
     image_size: str = None,
 ) -> list:
     """
-    直接调用 Gemini REST API 生成图片。
-
-    风格通过 prompt 文字传递（来自 fusion 阶段），不通过参考图。
-    product_reference 仅用于让模型保持产品外观一致。
+    文+图一起传给 Gemini 生成图片。
 
     Args:
-        prompt: 融合后的生图 prompt（已包含风格描述）
-        product_reference: 产品原图路径（has_subject=true 时使用）
+        prompt: 融合后的生图 prompt（已包含详细风格描述）
+        style_references: 风格参考图路径列表（模型从中学习视觉风格）
+        product_reference: 产品原图路径（模型保持产品外观一致）
         aspect_ratio: 宽高比
         image_size: 分辨率 "512", "1K", "2K", "4K"
     """
@@ -51,29 +47,27 @@ def generate_image(
 
     aspect_ratio = aspect_ratio or config.DEFAULT_ASPECT_RATIO
     image_size = image_size or config.DEFAULT_IMAGE_SIZE
+    n_style = len(style_references) if style_references else 0
 
     logger.info(
-        "生成图片 (ratio=%s, size=%s, product_ref=%s)",
-        aspect_ratio, image_size,
+        "生成图片 (ratio=%s, size=%s, style_refs=%d, product_ref=%s)",
+        aspect_ratio, image_size, n_style,
         "yes" if product_reference else "no",
     )
 
+    # ── 构建 parts：参考图 → 产品图 → 文本指令 ──
     parts = []
+
+    if style_references:
+        for img_path in style_references:
+            parts.append(_image_to_inline_data(img_path))
 
     if product_reference and os.path.exists(product_reference):
         parts.append(_image_to_inline_data(product_reference))
-        instruction = (
-            f"Create a new product photograph using the provided product image as the subject. "
-            f"Maintain the exact product appearance (shape, label, colors, logo) from the image. "
-            f"Do NOT copy any text, branding, or layout from anywhere else. "
-            f"Apply the following visual style to create a completely new composition:\n\n{prompt}"
-        )
-    else:
-        instruction = prompt
 
+    instruction = _build_instruction(prompt, n_style, product_reference)
     parts.append({"text": instruction})
 
-    # 构建请求体
     payload = {
         "contents": [{"parts": parts}],
         "generationConfig": {
@@ -97,11 +91,9 @@ def generate_image(
         raise GenerationError(f"API 返回 {resp.status_code}: {resp.text[:500]}")
 
     result = resp.json()
-
     if "candidates" not in result or not result["candidates"]:
         raise GenerationError(f"API 未返回 candidates: {str(result)[:500]}")
 
-    # 解析返回的图片
     os.makedirs(config.OUTPUT_DIR, exist_ok=True)
     saved_paths = []
     timestamp = int(time.time())
@@ -128,3 +120,54 @@ def generate_image(
 
     logger.info("生成完成，共 %d 张图片", len(saved_paths))
     return saved_paths
+
+
+def _build_instruction(prompt: str, n_style: int, product_reference: str) -> str:
+    """
+    构建最终传给模型的文本指令。
+
+    prompt 已经是 Sandwich Strategy 三层结构（由 fusion 阶段产出），
+    这里只添加"图像角色声明"和"硬约束"框架，让模型知道每张图是什么角色。
+    """
+
+    if n_style > 0 and product_reference:
+        ref_labels = ", ".join(f"Reference Image {i+1}" for i in range(n_style))
+        return (
+            f"[IMAGE ROLES]\n"
+            f"- Images 1-{n_style}: STYLE REFERENCES ({ref_labels})\n"
+            f"- Image {n_style + 1}: PRODUCT — preserve its exact appearance (shape, label, packaging text, colors)\n"
+            f"\n"
+            f"[HARD CONSTRAINTS]\n"
+            f"- Do NOT copy any text, brand names, logos, slogans, or graphic elements from the style references.\n"
+            f"- Do NOT reproduce the specific product/packaging shown in the style references.\n"
+            f"- The output must feature ONLY the product from the PRODUCT image.\n"
+            f"\n"
+            f"[GENERATION PROMPT]\n"
+            f"{prompt}"
+        )
+
+    elif n_style > 0:
+        ref_labels = ", ".join(f"Reference Image {i+1}" for i in range(n_style))
+        return (
+            f"[IMAGE ROLES]\n"
+            f"- Images 1-{n_style}: STYLE REFERENCES ({ref_labels})\n"
+            f"\n"
+            f"[HARD CONSTRAINTS]\n"
+            f"- Do NOT copy any text, brand names, logos, or specific content from the references.\n"
+            f"- Learn ONLY the visual style language from them.\n"
+            f"\n"
+            f"[GENERATION PROMPT]\n"
+            f"{prompt}"
+        )
+
+    elif product_reference:
+        return (
+            f"[IMAGE ROLES]\n"
+            f"- Image 1: PRODUCT — preserve its exact appearance (shape, label, packaging text, colors)\n"
+            f"\n"
+            f"[GENERATION PROMPT]\n"
+            f"{prompt}"
+        )
+
+    else:
+        return prompt

@@ -69,28 +69,45 @@ def _get_intent(has_subject: bool, category: str, image_type: str, product_name:
     return template.format(name=product_name)
 
 
-def _build_rich_style_description(style_info: dict, fallback: str) -> str:
-    """从 overall_style 的详细字段组装完整风格描述用于 fusion。"""
+def _build_rich_style_description(style_info: dict, analysis_list: list, fallback: str) -> str:
+    """
+    从 overall_style 的详细字段 + 逐图 style_traits 组装完整风格描述。
+    包含归因信息（哪个特征来自哪张图），供 Sandwich Strategy fusion 使用。
+    """
     if not style_info:
         return fallback
 
     parts = []
     summary = style_info.get("style_description", "")
     if summary:
-        parts.append(summary)
+        parts.append(f"Overall: {summary}")
 
     detail_fields = [
-        ("color_palette", "Color and tone"),
-        ("rendering", "Rendering style and texture"),
-        ("lighting", "Lighting"),
-        ("composition", "Composition"),
-        ("mood", "Mood and atmosphere"),
-        ("special_elements", "Special design elements"),
+        ("color_palette", "Color and tone", "color_source"),
+        ("rendering", "Rendering style and texture", "rendering_source"),
+        ("lighting", "Lighting", "lighting_source"),
+        ("composition", "Composition", None),
+        ("mood", "Mood and atmosphere", None),
+        ("special_elements", "Special design elements", None),
     ]
-    for key, label in detail_fields:
+    for key, label, source_key in detail_fields:
         val = style_info.get(key, "")
         if val and val != summary:
-            parts.append(f"{label}: {val}")
+            source = style_info.get(source_key, "") if source_key else ""
+            if source:
+                parts.append(f"{label}: {val} (source: {source})")
+            else:
+                parts.append(f"{label}: {val}")
+
+    if analysis_list:
+        trait_lines = []
+        for item in analysis_list:
+            traits = item.get("style_traits", [])
+            if traits:
+                idx = item.get("image_index", "?")
+                trait_lines.append(f"Image #{idx} traits: {', '.join(traits)}")
+        if trait_lines:
+            parts.append("Per-image style traits:\n" + "\n".join(trait_lines))
 
     return "\n".join(parts) if parts else fallback
 
@@ -128,13 +145,13 @@ def smart_generate_set(
         typ = item.get("image_type", "?")
         logger.info("  #%d [%s] %s  has_subject=%s", idx, cat, typ, has)
 
-    # 提取详细风格描述（纯文字，这是分析阶段的核心产出）
     style_info = analysis_list[0].get("overall_style", {}) if analysis_list else {}
-    style_text = _build_rich_style_description(style_info, description[:500])
+    style_text = _build_rich_style_description(style_info, analysis_list, description[:500])
     logger.info("风格描述长度: %d 字符", len(style_text))
 
-    # ── 阶段2+3：逐张融合 + 生成 ──
+    # ── 阶段2+3：逐张融合 + 生成（文+图一起传） ──
     logger.info("═══ 阶段2+3：逐张融合 & 生成 ═══")
+    logger.info("风格参考基础: %d 张代表图 %s", len(rep_paths), [Path(p).name for p in rep_paths])
     results = []
 
     for item in analysis_list:
@@ -145,32 +162,41 @@ def smart_generate_set(
         category = item.get("design_category", "ecommerce")
         filename = Path(ref_path).name
 
-        # 构建内容意图
-        intent = _get_intent(has_subject, category, image_type, product_name)
-        mode_label = "产品图+风格prompt" if has_subject else "纯风格prompt"
-        logger.info("#%d %s | %s | %s | %s", idx, filename, category, image_type, mode_label)
+        # 风格参考图 = 代表图 + 当前图（去重）
+        style_refs = list(rep_paths)
+        if ref_path not in style_refs:
+            style_refs.append(ref_path)
 
-        # 阶段2：融合（风格描述 + 内容意图 → 最终 prompt）
-        logger.info("  融合 prompt...")
+        intent = _get_intent(has_subject, category, image_type, product_name)
+
+        if has_subject:
+            logger.info("#%d %s | %s | %s | 风格%d张+产品图+融合prompt", idx, filename, category, image_type, len(style_refs))
+        else:
+            logger.info("#%d %s | %s | %s | 风格%d张+融合prompt(无产品图)", idx, filename, category, image_type, len(style_refs))
+
+        # 阶段2：融合（Sandwich Strategy: 风格文字 + 内容意图 + 参考图数量 → 三层 prompt）
+        logger.info("  融合 prompt (Sandwich Strategy, %d 张风格参考)...", len(style_refs))
         try:
-            fused_prompt = fuse_prompt(style_text, intent)
+            fused_prompt = fuse_prompt(style_text, intent, ref_count=len(style_refs))
             logger.info("  融合结果: %s...", fused_prompt[:100])
         except Exception as e:
             logger.error("  融合失败: %s", e)
             continue
 
-        # 阶段3：生成（融合后的 prompt + 产品原图，不传参考图）
+        # 阶段3：生成（融合prompt + 风格参考图 + 产品图，文+图一起传）
         logger.info("  生成图片...")
         try:
             if has_subject:
                 paths = generate_image(
                     prompt=fused_prompt,
+                    style_references=style_refs,
                     product_reference=product_image_path,
                     aspect_ratio="3:4",
                 )
             else:
                 paths = generate_image(
                     prompt=fused_prompt,
+                    style_references=style_refs,
                     aspect_ratio="3:4",
                 )
             results.append({
