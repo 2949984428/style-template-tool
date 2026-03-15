@@ -46,10 +46,21 @@ def fuse_prompt(template_description: str, user_prompt: str, ref_count: int = 1)
     )
 
     client = get_client()
-    response = client.models.generate_content(
-        model=config.FUSION_MODEL,
-        contents=full_prompt,
-        config=types.GenerateContentConfig(temperature=0.4, max_output_tokens=1024),
-    )
 
-    return response.text.strip()
+    for attempt in range(3):
+        response = client.models.generate_content(
+            model=config.FUSION_MODEL,
+            contents=full_prompt,
+            config=types.GenerateContentConfig(temperature=0.5, max_output_tokens=2048),
+        )
+        result = response.text.strip()
+        word_count = len(result.split())
+
+        if word_count >= 150:
+            logger.info("融合完成: %d 词 (attempt %d)", word_count, attempt + 1)
+            return result
+
+        logger.warning("融合结果过短 (%d 词), 重试 %d/3...", word_count, attempt + 1)
+
+    logger.warning("多次重试后仍较短 (%d 词)，使用最后结果", len(result.split()))
+    return result

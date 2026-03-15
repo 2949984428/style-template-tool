@@ -52,10 +52,25 @@ Build the final prompt with exactly THREE layers, in this order:
 
 1. Output ONLY the final fused prompt in English. No explanations, no labels, no markdown headers.
 2. The three layers should flow as a single coherent paragraph/text block — do NOT use "Layer 1:", "Layer 2:" labels.
-3. Length: 200-400 words. Dense with actionable visual information.
+3. **MINIMUM 200 words, target 300 words.** This is critical — short prompts produce generic results. Every style dimension must be described in full sentences with attribution.
 4. NEVER include brand names, logos, or text content from the style references in the output prompt.
 5. The style traits must be described narratively with attribution, not as a bullet list.
 6. If the Content Intent mentions a specific product, describe it physically but do not copy any branding from the style references onto it.
+7. The Layer 3 (Style Blueprint) should be the longest part — at least 60% of the total prompt.
+
+## Example Output Structure (showing the flow, not exact content)
+
+"[2-3 sentences describing the subject and scene vividly]. Strictly apply the visual style derived from the style reference images; the result must look like it belongs to the same visual series. [6-10 sentences describing the style dimensions narratively: The scene adopts the muted blue-grey palette characteristic of Reference Image 1, where cool undertones create a clinical yet approachable atmosphere... The lighting follows the soft diffused studio setup seen prominently in Reference Image 2, where gentle highlights wrap around transparent glass surfaces... The material rendering draws from the translucent gel textures of Reference Image 3, emphasizing a dewy, crystalline clarity...]. The image is presented without any text overlays, brand logos, or graphic elements."
+
+## CRITICAL LENGTH REQUIREMENT
+
+Your output MUST contain at least 200 words and ideally 300+ words. Responses shorter than 200 words are UNACCEPTABLE and will be rejected. The Layer 3 (Style Blueprint with attribution) alone should be at least 150 words.
+
+If your draft is too short, expand Layer 3 by adding more detail about:
+- How the color palette manifests on specific surfaces (citing Reference Image source)
+- Exactly how the lighting creates highlights and shadows (citing Reference Image source)
+- The precise texture and material quality of surfaces (citing Reference Image source)
+- The emotional atmosphere and how it connects to the visual elements
 
 ## Output
 
