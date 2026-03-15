@@ -91,7 +91,7 @@
   - 营销类: poster / banner / social_media / kv
   - UI类: web_ui / app_ui / icon
 - `subject_description`: 如果 has_subject=true，描述主体外观特征；如果 false，留空字符串
-- `style_traits`: 这张图最突出的 1-3 个风格特征（如"柔和漫射光"、"低饱和淡紫色调"、"透明玻璃材质感"），用于后续风格归因
+- `style_traits`: 这张图最突出的 1-3 个风格特征，**must be in English**（如"soft diffused lighting"、"low-saturation lavender tones"、"transparent glass texture"），用于后续风格归因
 
 ## 任务二：整体风格深度分析
 
@@ -131,10 +131,11 @@
 ### 风格描述的写作要求
 
 ⚠️ **风格描述是直接用来指导 AI 生图的关键输入**，必须满足：
-1. **语言精准、具象**：不要用"好看""精致"等模糊词，要用"柔光环境下的低饱和粉紫色调，哑光质感"这样具体可执行的描述
-2. **重点突出最具辨识度的特征**：什么让这组图的风格区别于其他风格？这是最重要的信息
-3. **每个维度一段，结构清晰**：便于后续 prompt 组装
-4. **最终总结段必须高度浓缩**：50-100 字，可以直接粘贴到生图 prompt 中作为风格前缀使用
+1. **ALL style descriptions and JSON field values MUST be written in English** — this is critical because the output will be directly used in English image generation prompts
+2. **语言精准、具象**：不要用"good looking"等模糊词，要用"soft diffused lighting with low-saturation lavender tones and matte texture"这样具体可执行的描述
+3. **重点突出最具辨识度的特征**：什么让这组图的风格区别于其他风格？这是最重要的信息
+4. **每个维度一段，结构清晰**：便于后续 prompt 组装
+5. **最终总结段必须高度浓缩**：50-100 words in English，可以直接粘贴到生图 prompt 中作为风格前缀使用
 
 ## 任务三：选出代表图
 
@@ -145,7 +146,9 @@
 
 ## 输出要求
 
-先输出风格描述文字（**每个维度一段，共 6 段 + 1 段总结**），然后输出 REPRESENTATIVE_IMAGES 行，最后输出以下 JSON：
+先输出风格描述文字（**每个维度一段，共 6 段 + 1 段总结，ALL IN ENGLISH**），然后输出 REPRESENTATIVE_IMAGES 行，最后输出以下 JSON：
+
+⚠️ **ALL JSON string values MUST be in English.** This is critical.
 
 ```json
 {
@@ -155,8 +158,8 @@
       "design_category": "ecommerce",
       "has_subject": true,
       "image_type": "product_hero",
-      "subject_description": "两瓶透明按压瓶，一紫一黄...",
-      "style_traits": ["半透明磨砂圆环装饰", "柔和漫射光影棚效果", "低饱和淡紫+米黄双色调"]
+      "subject_description": "Two transparent pump bottles, one in pale lavender and one in soft yellow, featuring brand logo and sword motif on the body",
+      "style_traits": ["frosted translucent ring decoration", "soft diffused studio lighting", "low-saturation lavender and beige dual-tone palette"]
     },
     {
       "image_index": 2,
@@ -164,27 +167,28 @@
       "has_subject": false,
       "image_type": "ingredient",
       "subject_description": "",
-      "style_traits": ["晶莹凝胶质感成分球", "清透浅蓝渐变背景"]
+      "style_traits": ["crystalline gel-textured ingredient spheres", "translucent light-blue gradient background"]
     }
   ],
   "overall_style": {
-    "style_description": "50-100字的高度浓缩风格总结，可直接作为生图prompt前缀",
-    "color_palette": "详细色调描述：主色调、饱和度、调色风格、特征色彩组合",
-    "color_source": "该色调特征最典型来自图#N（可多图）",
-    "composition": "构图方式、视角偏好、空间感",
-    "rendering": "风格类型、细节精度、材质质感特征",
-    "rendering_source": "该质感特征最典型来自图#N",
-    "lighting": "光源类型、对比度、特殊光影效果",
-    "lighting_source": "该光影特征最典型来自图#N",
-    "mood": "情绪基调、叙事感",
-    "special_elements": "纹理/滤镜、边框/装饰、排版风格、重复视觉符号"
+    "style_description": "A 50-100 word English summary that can be directly used as a style prefix in image generation prompts",
+    "color_palette": "Detailed color description in English: dominant hues, saturation level, grading style, key color combinations",
+    "color_source": "Image #N where this color trait is most prominent",
+    "composition": "Composition approach, perspective preference, spatial feel — in English",
+    "rendering": "Style type, detail precision, material/texture characteristics — in English",
+    "rendering_source": "Image #N where this texture trait is most prominent",
+    "lighting": "Light source type, contrast level, special lighting effects — in English",
+    "lighting_source": "Image #N where this lighting trait is most prominent",
+    "mood": "Emotional tone, narrative quality — in English",
+    "special_elements": "Textures/filters, borders/decorations, typography style, recurring visual motifs — in English"
   }
 }
 ```
 
 注意：
+- **ALL string values in the JSON MUST be in English** — no Chinese characters in JSON output
 - per_image 数组的长度必须等于图片数量，每张图都要分析
 - has_subject 必须严格按照上面的标准判断，不要把成分元素图误判为 true
-- overall_style 的每个字段都要**详细填写**，不要只写几个词，要写完整的描述句
+- overall_style 的每个字段都要**详细填写**，不要只写几个词，要写完整的英文描述句
 - style_description 是最终浓缩总结，其他字段是各维度的详细分析
 - JSON 必须是合法格式，用 ```json ``` 包裹
