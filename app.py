@@ -16,7 +16,7 @@ from core.analyzer import analyze_images
 from core.fusion import fuse_prompt
 from core.generator import generate_image
 from core.utils import setup_logging, get_logger
-from generate_smart_set import _get_intent, _build_rich_style_description
+from generate_smart_set import _get_intent, _build_rich_style_description, _extract_exclude_items
 
 setup_logging()
 logger = get_logger("app")
@@ -169,6 +169,7 @@ def run_smart_set(ref_images, product_img, product_name, aspect):
     yield [], "\n".join(log_lines), desc
 
     style_info = a_list[0].get("overall_style", {}) if a_list else {}
+    exclude_items = _extract_exclude_items(a_list, desc)
     all_results = []
 
     for item in a_list:
@@ -185,8 +186,16 @@ def run_smart_set(ref_images, product_img, product_name, aspect):
         style_text = _build_rich_style_description(style_info, a_list, desc[:500], style_refs=style_refs)
         intent = _get_intent(has_subject, category, image_type, name)
 
+        product_desc = ""
+
         try:
-            fused_prompt = fuse_prompt(style_text, intent, ref_count=len(style_refs))
+            fused_prompt = fuse_prompt(
+                style_text, intent,
+                ref_count=len(style_refs),
+                product_description=product_desc,
+                exclude_items=exclude_items,
+                style_info=style_info,
+            )
         except Exception as e:
             log_lines.append(f"  ✗ #{idx} 融合失败: {e}")
             yield all_results[:], "\n".join(log_lines), desc

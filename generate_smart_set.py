@@ -69,6 +69,33 @@ def _get_intent(has_subject: bool, category: str, image_type: str, product_name:
     return template.format(name=product_name)
 
 
+def _extract_exclude_items(analysis_list: list, description: str) -> str:
+    """从风格描述和分析结果中提取需要排除的品牌名、Logo 等元素。"""
+    import re
+    exclude_set = set()
+
+    text = description + " " + " ".join(
+        str(item.get("subject_description", "")) for item in analysis_list
+    )
+    style_info = analysis_list[0].get("overall_style", {}) if analysis_list else {}
+    text += " " + str(style_info.get("special_elements", ""))
+
+    brand_patterns = [
+        r"(?:品牌|brand|logo|Logo|LOGO)[^，。\n]*?[「「]([^」」]+)[」」]",
+        r"(KING\s*ARTHUR|亚瑟王|King\s*Arthur)",
+        r"([A-Z][A-Za-z]+(?:\s+[A-Z][a-z]+)*)\s*(?:品牌|Logo|logo|标识)",
+    ]
+    for pat in brand_patterns:
+        for m in re.finditer(pat, text):
+            exclude_set.add(m.group(1) if m.lastindex else m.group(0))
+
+    if not exclude_set:
+        return "any brand names, logos, text, slogans, or brand-specific graphic elements from the style references"
+
+    brands = ", ".join(f"'{b}'" for b in sorted(exclude_set))
+    return f"{brands} branding, text, logos, slogans, or brand-specific graphic elements from the style references"
+
+
 def _build_rich_style_description(style_info: dict, analysis_list: list, fallback: str,
                                    style_refs: list = None) -> str:
     """
@@ -180,6 +207,10 @@ def smart_generate_set(
 
     style_info = analysis_list[0].get("overall_style", {}) if analysis_list else {}
 
+    # 提取排除项：风格参考图中出现的品牌名、文字等
+    exclude_items = _extract_exclude_items(analysis_list, description)
+    logger.info("排除项: %s", exclude_items)
+
     # ── 阶段2+3：逐张融合 + 生成（文+图一起传） ──
     logger.info("═══ 阶段2+3：逐张融合 & 生成 ═══")
     logger.info("风格参考基础: %d 张代表图 %s", len(rep_paths), [Path(p).name for p in rep_paths])
@@ -208,10 +239,20 @@ def smart_generate_set(
         else:
             logger.info("#%d %s | %s | %s | 风格%d张+融合prompt(无产品图)", idx, filename, category, image_type, len(style_refs))
 
-        # 阶段2：融合（Sandwich Strategy: 风格文字 + 内容意图 + 参考图数量 → 三层 prompt）
-        logger.info("  融合 prompt (Sandwich Strategy, %d 张风格参考)...", len(style_refs))
+        # 产品外观描述留空——产品图由用户上传，模型直接从 Reference Image 1 读取外观
+        # 风格参考图的 subject_description 描述的是参考图中的产品（非目标产品），不能传入
+        product_desc = ""
+
+        # 阶段2：融合（产品描述 + 风格分析 + 内容意图 + 排除项 → 完整 prompt）
+        logger.info("  融合 prompt (%d 张风格参考, 产品描述 %d 字)...", len(style_refs), len(product_desc))
         try:
-            fused_prompt = fuse_prompt(style_text, intent, ref_count=len(style_refs))
+            fused_prompt = fuse_prompt(
+                style_text, intent,
+                ref_count=len(style_refs),
+                product_description=product_desc,
+                exclude_items=exclude_items,
+                style_info=style_info,
+            )
             logger.info("  融合结果: %s...", fused_prompt[:100])
         except Exception as e:
             logger.error("  融合失败: %s", e)
