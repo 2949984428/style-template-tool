@@ -19,7 +19,7 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 # 模型配置
 ANALYSIS_MODEL = "gemini-2.5-flash"
 FUSION_MODEL = "gemini-2.5-flash"
-IMAGE_MODEL = "gemini-2.0-flash-preview-image-generation"
+IMAGE_MODEL = "gemini-2.5-flash-image"
 
 # 输出目录
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "outputs")
