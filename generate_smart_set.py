@@ -48,6 +48,29 @@ STYLE_ONLY_PROMPTS = {
 }
 
 
+def _build_rich_style_prompt(style_info: dict, fallback: str) -> str:
+    """从 overall_style 的详细字段组装完整风格描述，而非仅用 style_description 摘要。"""
+    if not style_info:
+        return fallback
+
+    summary = style_info.get("style_description", "")
+    parts = [summary] if summary else []
+
+    detail_fields = [
+        ("color_palette", "Color palette: "),
+        ("rendering", "Style & texture: "),
+        ("lighting", "Lighting: "),
+        ("mood", "Mood: "),
+        ("special_elements", "Design elements: "),
+    ]
+    for key, prefix in detail_fields:
+        val = style_info.get(key, "")
+        if val and val != summary:
+            parts.append(f"{prefix}{val}")
+
+    return ". ".join(parts) if parts else fallback
+
+
 def _get_style_only_prompt(category: str, image_type: str, product_name: str, style_desc: str) -> str:
     cat_prompts = STYLE_ONLY_PROMPTS.get(category, STYLE_ONLY_PROMPTS["ecommerce"])
     template = cat_prompts.get(image_type, cat_prompts["_default"])
@@ -91,6 +114,9 @@ def smart_generate_set(
     style_desc = description[:200] if description else ""
     results = []
 
+    # 代表图作为所有生成任务的风格参考基础（从全局分析中选出的最能代表风格的图）
+    logger.info("风格参考基础: %d 张代表图 %s", len(rep_paths), [Path(p).name for p in rep_paths])
+
     for item in analysis_list:
         idx = item["image_index"]
         ref_path = item["image_path"]
@@ -98,18 +124,23 @@ def smart_generate_set(
         image_type = item.get("image_type", "product_hero")
         category = item.get("design_category", "ecommerce")
         style_info = item.get("overall_style", {})
-        sd = style_info.get("style_description", style_desc) if style_info else style_desc
+        sd = _build_rich_style_prompt(style_info, style_desc)
 
         filename = Path(ref_path).name
-        mode_label = "双参考图" if has_subject else "单参考图"
-        logger.info("#%d %s | %s | %s | %s", idx, filename, category, image_type, mode_label)
+
+        # 构建风格参考图列表：代表图 + 当前图（去重）
+        style_refs = list(rep_paths)
+        if ref_path not in style_refs:
+            style_refs.append(ref_path)
 
         if has_subject:
+            # has_subject=true：风格参考图（多张）+ 产品原图
             prompt_text = f"{product_name} professional {image_type} photography, {sd}"
+            logger.info("#%d %s | %s | %s | 风格参考%d张+产品原图", idx, filename, category, image_type, len(style_refs))
             try:
                 paths = generate_image(
                     prompt=prompt_text,
-                    style_references=[ref_path],
+                    style_references=style_refs,
                     product_reference=product_image_path,
                     aspect_ratio="3:4",
                 )
@@ -118,15 +149,17 @@ def smart_generate_set(
             except Exception as e:
                 logger.error("  生成失败: %s", e)
         else:
+            # has_subject=false：只用风格参考图（多张），不用产品原图
             prompt_text = _get_style_only_prompt(category, image_type, product_name, sd)
+            logger.info("#%d %s | %s | %s | 风格参考%d张(无产品图)", idx, filename, category, image_type, len(style_refs))
             try:
                 paths = generate_image(
                     prompt=prompt_text,
-                    style_references=[ref_path],
+                    style_references=style_refs,
                     product_reference=None,
                     aspect_ratio="3:4",
                 )
-                results.append({"reference": filename, "mode": "single", "category": category, "type": image_type, "outputs": paths})
+                results.append({"reference": filename, "mode": "style_only", "category": category, "type": image_type, "outputs": paths})
                 logger.info("  生成成功: %d 张", len(paths))
             except Exception as e:
                 logger.error("  生成失败: %s", e)

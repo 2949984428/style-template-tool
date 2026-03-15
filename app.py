@@ -150,7 +150,7 @@ def run_smart_set(ref_images, product_img, product_name, aspect):
     yield [], "\n".join(log_lines), ""
 
     try:
-        desc, _, _, a_list = analyze_images(ref_paths, detailed=True)
+        desc, _, rep_paths, a_list = analyze_images(ref_paths, detailed=True)
     except Exception as e:
         logger.exception("分析失败")
         yield [], f"分析失败: {e}", ""
@@ -178,17 +178,22 @@ def run_smart_set(ref_images, product_img, product_name, aspect):
         image_type = item.get("image_type", "product_hero")
         category = item.get("design_category", "ecommerce")
 
+        # 风格参考 = 代表图 + 当前图（去重），确保全局风格一致性
+        style_refs = list(rep_paths)
+        if ref_path not in style_refs:
+            style_refs.append(ref_path)
+
         if has_subject and prod:
             prompt_text = f"{name} professional {image_type} photography, {style_desc}"
             try:
                 paths = generate_image(
                     prompt=prompt_text,
-                    style_references=[ref_path],
+                    style_references=style_refs,
                     product_reference=prod,
                     aspect_ratio=aspect,
                 )
                 all_results.extend(paths)
-                log_lines.append(f"  ✓ #{idx} 双参考图 — {len(paths)} 张")
+                log_lines.append(f"  ✓ #{idx} 风格{len(style_refs)}张+产品图 — {len(paths)} 张")
             except Exception as e:
                 log_lines.append(f"  ✗ #{idx} 失败: {e}")
         else:
@@ -196,12 +201,12 @@ def run_smart_set(ref_images, product_img, product_name, aspect):
             try:
                 paths = generate_image(
                     prompt=prompt_text,
-                    style_references=[ref_path],
+                    style_references=style_refs,
                     product_reference=None,
                     aspect_ratio=aspect,
                 )
                 all_results.extend(paths)
-                log_lines.append(f"  ✓ #{idx} 单参考图 — {len(paths)} 张")
+                log_lines.append(f"  ✓ #{idx} 风格{len(style_refs)}张(无产品图) — {len(paths)} 张")
             except Exception as e:
                 log_lines.append(f"  ✗ #{idx} 失败: {e}")
 
