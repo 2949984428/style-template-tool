@@ -1,582 +1,365 @@
 """
 风格模板自动化工具 — Gradio Web UI
-覆盖完整 3 阶段：模板描述生成 → 融合 Prompt → 生成图片
-UI：现代暗色液态玻璃风格 (shadcn-inspired)
+三阶段：图集分析 → Prompt 融合 → 图片生成
+支持智能双参考图 / 单参考图自动选择
 """
 
 import os
 import sys
+
 import gradio as gr
 
-# 确保项目根目录在 path 中
 sys.path.insert(0, os.path.dirname(__file__))
 
 import config
 from core.analyzer import analyze_images
 from core.fusion import fuse_prompt
 from core.generator import generate_image
+from core.utils import setup_logging, get_logger
+from generate_smart_set import _get_style_only_prompt
 
-# ─── 全局状态 ───
-state = {
-    "template_description": "",
-    "representative_paths": [],
-    "all_image_paths": [],
+setup_logging()
+logger = get_logger("app")
+
+# ── 全局状态 ──
+
+_state: dict = {
+    "description": "",
+    "rep_paths": [],
+    "all_paths": [],
+    "analysis_list": [],
 }
 
 
-# ─── 阶段1：图集分析 ───
+def _to_paths(files) -> list:
+    if not files:
+        return []
+    return [f if isinstance(f, str) else f.name for f in files]
 
-def run_analysis(images):
-    """上传图集 → 分析风格 → 输出描述 + 代表图"""
+
+def _single_path(f):
+    if f is None:
+        return None
+    return f if isinstance(f, str) else getattr(f, "name", str(f))
+
+
+# ─── 阶段 1：分析 ───
+
+
+def run_analysis(images, detailed):
     if not images:
-        return "请先上传图片", [], ""
+        return "请先上传图片", [], "", ""
 
-    image_paths = [img if isinstance(img, str) else img.name for img in images]
-    state["all_image_paths"] = image_paths
+    paths = _to_paths(images)
+    _state["all_paths"] = paths
 
     try:
-        description, rep_indices = analyze_images(image_paths)
+        if detailed:
+            desc, rep_idx, _, a_list = analyze_images(paths, detailed=True)
+            _state["analysis_list"] = a_list
+
+            lines = []
+            for item in a_list:
+                idx = item["image_index"]
+                cat = item.get("design_category", "?")
+                has = item.get("has_subject", "?")
+                typ = item.get("image_type", "?")
+                subj = item.get("subject_description", "")
+                rep = " ⭐" if item.get("is_representative") else ""
+                mode = "双参考图" if has else "单参考图"
+                lines.append(
+                    f"#{idx}{rep}  [{cat}] {typ}  "
+                    f"主体={'有' if has else '无'} → {mode}"
+                )
+                if subj:
+                    lines.append(f"   └ {subj}")
+            analysis_md = "\n".join(lines)
+        else:
+            desc, rep_idx, _ = analyze_images(paths)
+            _state["analysis_list"] = []
+            analysis_md = ""
     except Exception as e:
-        return f"分析失败：{str(e)}", [], ""
+        logger.exception("分析失败")
+        return f"分析失败：{e}", [], "", ""
 
-    state["template_description"] = description
+    _state["description"] = desc
 
-    rep_paths = []
-    for idx in rep_indices:
-        if 1 <= idx <= len(image_paths):
-            rep_paths.append(image_paths[idx - 1])
-    if not rep_paths:
-        rep_paths = [image_paths[0]]
-    state["representative_paths"] = rep_paths
+    rep_display = [paths[i - 1] for i in rep_idx if 1 <= i <= len(paths)]
+    if not rep_display and paths:
+        rep_display = [paths[0]]
+    _state["rep_paths"] = rep_display
 
-    return description, rep_paths, description
+    return desc, rep_display, desc, analysis_md
 
 
-# ─── 阶段2：融合 Prompt ───
+# ─── 阶段 2：融合 ───
+
 
 def run_fusion(template_desc, user_prompt):
-    """融合模板描述 + 用户 prompt"""
     if not template_desc.strip():
-        return "模板描述为空，请先在第一步生成"
+        return "模板描述为空，请先完成风格分析"
     if not user_prompt.strip():
-        return "请输入用户 prompt"
+        return "请输入用户 Prompt"
 
-    state["template_description"] = template_desc
-
+    _state["description"] = template_desc
     try:
-        fused = fuse_prompt(template_desc, user_prompt)
+        return fuse_prompt(template_desc, user_prompt)
     except Exception as e:
-        return f"融合失败：{str(e)}"
+        logger.exception("融合失败")
+        return f"融合失败：{e}"
 
-    return fused
+
+# ─── 阶段 3：生成 ───
 
 
-# ─── 阶段3：生成图片 ───
-
-def run_generate(fused_prompt, user_ref_images, aspect_ratio):
-    """生成图片"""
+def run_generate(fused_prompt, product_img, aspect):
     if not fused_prompt.strip():
-        return [], "请先融合 prompt"
+        return [], "请先融合 Prompt"
 
-    ref_paths = list(state.get("representative_paths", []))
-    if user_ref_images:
-        for img in user_ref_images:
-            path = img if isinstance(img, str) else img.name
-            ref_paths.append(path)
+    style_refs = list(_state.get("rep_paths", []))
+    prod = _single_path(product_img)
+    tag = "双参考图" if prod else "风格参考图"
 
     try:
-        result_paths = generate_image(
+        paths = generate_image(
             prompt=fused_prompt,
-            reference_images=ref_paths if ref_paths else None,
-            aspect_ratio=aspect_ratio,
+            style_references=style_refs or None,
+            product_reference=prod,
+            aspect_ratio=aspect,
         )
     except Exception as e:
-        return [], f"生成失败：{str(e)}"
+        logger.exception("生成失败")
+        return [], f"生成失败：{e}"
 
-    return result_paths, f"成功生成 {len(result_paths)} 张图片"
-
-
-# ─── 批量测试 ───
-
-def run_batch(template_desc, prompt1, prompt2, prompt3, aspect_ratio):
-    """批量测试 3 组"""
-    results = [[], [], []]
-    messages = []
-    state["template_description"] = template_desc
-    ref_paths = state.get("representative_paths", [])
-
-    for i, user_prompt in enumerate([prompt1, prompt2, prompt3]):
-        if not user_prompt.strip():
-            messages.append(f"案例 {i+1}：已跳过（prompt 为空）")
-            continue
-        try:
-            fused = fuse_prompt(template_desc, user_prompt)
-            paths = generate_image(
-                prompt=fused,
-                reference_images=ref_paths if ref_paths else None,
-                aspect_ratio=aspect_ratio,
-            )
-            results[i] = paths
-            messages.append(f"案例 {i+1}：生成 {len(paths)} 张")
-        except Exception as e:
-            messages.append(f"案例 {i+1}：失败 - {str(e)}")
-
-    return results[0], results[1], results[2], "\n".join(messages)
+    return paths, f"{tag} — 生成 {len(paths)} 张图片"
 
 
-# ─── 液态玻璃暗色 CSS ───
+# ─── 智能套图（generator 流式输出） ───
+
+
+def run_smart_set(ref_images, product_img, product_name, aspect):
+    if not ref_images:
+        yield [], "请上传参考图集", ""
+        return
+
+    ref_paths = _to_paths(ref_images)
+    prod = _single_path(product_img)
+    name = product_name.strip() or "Product"
+
+    log_lines = ["正在分析图集…"]
+    yield [], "\n".join(log_lines), ""
+
+    try:
+        desc, _, _, a_list = analyze_images(ref_paths, detailed=True)
+    except Exception as e:
+        logger.exception("分析失败")
+        yield [], f"分析失败: {e}", ""
+        return
+
+    log_lines[0] = f"分析完成 — {len(ref_paths)} 张参考图"
+    log_lines.append("")
+    for item in a_list:
+        idx = item["image_index"]
+        has = item.get("has_subject", True)
+        typ = item.get("image_type", "?")
+        log_lines.append(f"  #{idx} [{typ}] → {'双参考图' if has else '单参考图'}")
+    log_lines.append("")
+    log_lines.append("开始逐张生成…")
+    log_lines.append("")
+    yield [], "\n".join(log_lines), desc
+
+    style_desc = desc[:200] if desc else ""
+    all_results = []
+
+    for item in a_list:
+        idx = item["image_index"]
+        ref_path = item["image_path"]
+        has_subject = item.get("has_subject", True)
+        image_type = item.get("image_type", "product_hero")
+        category = item.get("design_category", "ecommerce")
+
+        if has_subject and prod:
+            prompt_text = f"{name} professional {image_type} photography, {style_desc}"
+            try:
+                paths = generate_image(
+                    prompt=prompt_text,
+                    style_references=[ref_path],
+                    product_reference=prod,
+                    aspect_ratio=aspect,
+                )
+                all_results.extend(paths)
+                log_lines.append(f"  ✓ #{idx} 双参考图 — {len(paths)} 张")
+            except Exception as e:
+                log_lines.append(f"  ✗ #{idx} 失败: {e}")
+        else:
+            prompt_text = _get_style_only_prompt(category, image_type, name, style_desc)
+            try:
+                paths = generate_image(
+                    prompt=prompt_text,
+                    style_references=[ref_path],
+                    product_reference=None,
+                    aspect_ratio=aspect,
+                )
+                all_results.extend(paths)
+                log_lines.append(f"  ✓ #{idx} 单参考图 — {len(paths)} 张")
+            except Exception as e:
+                log_lines.append(f"  ✗ #{idx} 失败: {e}")
+
+        yield all_results[:], "\n".join(log_lines), desc
+
+    log_lines.append("")
+    log_lines.append(f"全部完成! 共生成 {len(all_results)} 张")
+    yield all_results, "\n".join(log_lines), desc
+
+
+# ─── Theme + CSS ───
+
+_COLORS = {
+    "bg_root": "#0b0f19",
+    "bg_card": "#111827",
+    "bg_input": "#030712",
+    "border_subtle": "#1f2937",
+    "accent": "#8b5cf6",
+}
+
+
+def _midnight_theme():
+    return gr.themes.Base(
+        primary_hue=gr.themes.colors.violet,
+        secondary_hue=gr.themes.colors.slate,
+        neutral_hue=gr.themes.colors.gray,
+        font=gr.themes.GoogleFont("Inter"),
+        font_mono=gr.themes.GoogleFont("JetBrains Mono"),
+    ).set(
+        body_background_fill=_COLORS["bg_root"],
+        body_background_fill_dark=_COLORS["bg_root"],
+        block_background_fill=_COLORS["bg_card"],
+        block_background_fill_dark=_COLORS["bg_card"],
+        block_border_width="1px",
+        block_border_color=_COLORS["border_subtle"],
+        block_border_color_dark=_COLORS["border_subtle"],
+        input_background_fill=_COLORS["bg_input"],
+        input_background_fill_dark=_COLORS["bg_input"],
+        button_primary_background_fill=_COLORS["accent"],
+        button_primary_background_fill_dark=_COLORS["accent"],
+        button_primary_border_color=_COLORS["accent"],
+        button_primary_text_color="white",
+    )
+
 
 CUSTOM_CSS = """
-/* ── 全局基础 ── */
-:root {
-    --glass-bg: rgba(16, 16, 20, 0.6);
-    --glass-border: rgba(255, 255, 255, 0.06);
-    --glass-hover: rgba(255, 255, 255, 0.08);
-    --glass-blur: 24px;
-    --accent: #a78bfa;
-    --accent-glow: rgba(167, 139, 250, 0.15);
-    --accent-hover: #c4b5fd;
-    --text-primary: #f4f4f5;
-    --text-secondary: #a1a1aa;
-    --text-muted: #52525b;
-    --surface: rgba(24, 24, 27, 0.8);
-    --radius: 16px;
-    --radius-sm: 10px;
-    --transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-}
+body { background-color: #0b0f19 !important; color: #f9fafb !important; }
+.gradio-container { max-width: 1400px !important; margin: 0 auto !important; padding: 32px !important; }
 
-body, .gradio-container {
-    background: #09090b !important;
-    color: var(--text-primary) !important;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', sans-serif !important;
-}
+#header-block { text-align: center; margin-bottom: 40px !important; background: transparent !important; border: none !important; box-shadow: none !important; }
+#header-block h1 { font-size: 3rem !important; font-weight: 800 !important; letter-spacing: -0.05em !important; margin-bottom: 12px !important; background: linear-gradient(to right, #c084fc, #6366f1) !important; -webkit-background-clip: text !important; -webkit-text-fill-color: transparent !important; }
+#header-block p { font-size: 1.1rem !important; color: #9ca3af !important; }
 
-.gradio-container {
-    max-width: 1280px !important;
-    margin: 0 auto !important;
-}
+.block, .panel { background-color: #111827 !important; border: 1px solid #1f2937 !important; border-radius: 12px !important; overflow: hidden !important; }
 
-/* ── 大背景装饰 ── */
-.gradio-container::before {
-    content: '';
-    position: fixed;
-    top: -40%;
-    left: -20%;
-    width: 80%;
-    height: 80%;
-    background: radial-gradient(ellipse, rgba(139, 92, 246, 0.08) 0%, transparent 60%);
-    pointer-events: none;
-    z-index: 0;
-}
-.gradio-container::after {
-    content: '';
-    position: fixed;
-    bottom: -30%;
-    right: -10%;
-    width: 60%;
-    height: 60%;
-    background: radial-gradient(ellipse, rgba(59, 130, 246, 0.05) 0%, transparent 60%);
-    pointer-events: none;
-    z-index: 0;
-}
+.tab-nav { border: none !important; background: transparent !important; gap: 24px !important; }
+.tab-nav button { background: transparent !important; border: none !important; color: #6b7280 !important; font-weight: 600 !important; font-size: 1rem !important; padding: 12px 0 !important; border-bottom: 2px solid transparent !important; border-radius: 0 !important; }
+.tab-nav button:hover { color: #d1d5db !important; }
+.tab-nav button.selected { color: #c084fc !important; border-bottom-color: #c084fc !important; background: transparent !important; box-shadow: none !important; }
 
-/* ── Header 标题 ── */
-.markdown-text h1 {
-    font-size: 2rem !important;
-    font-weight: 700 !important;
-    letter-spacing: -0.03em !important;
-    background: linear-gradient(135deg, #f4f4f5 0%, #a78bfa 50%, #818cf8 100%) !important;
-    -webkit-background-clip: text !important;
-    -webkit-text-fill-color: transparent !important;
-    background-clip: text !important;
-    padding-bottom: 4px !important;
-}
-.markdown-text p, .markdown-text h3 {
-    color: var(--text-secondary) !important;
-}
-.markdown-text h3 {
-    font-size: 0.95rem !important;
-    font-weight: 500 !important;
-    letter-spacing: -0.01em !important;
-    color: var(--text-muted) !important;
-    border: none !important;
-}
+textarea, input[type="text"], .wrap .dropdown, .wrap .secondary-wrap { background-color: #030712 !important; border: 1px solid #1f2937 !important; border-radius: 8px !important; color: #f3f4f6 !important; font-size: 0.95rem !important; padding: 12px !important; }
+textarea:focus, input[type="text"]:focus { border-color: #8b5cf6 !important; box-shadow: 0 0 0 2px rgba(139,92,246,0.2) !important; outline: none !important; }
 
-/* ── Tab 导航 ── */
-.tab-nav {
-    background: var(--glass-bg) !important;
-    backdrop-filter: blur(var(--glass-blur)) !important;
-    -webkit-backdrop-filter: blur(var(--glass-blur)) !important;
-    border: 1px solid var(--glass-border) !important;
-    border-radius: 14px !important;
-    padding: 6px !important;
-    margin-bottom: 20px !important;
-    gap: 4px !important;
-}
-.tab-nav button {
-    font-size: 14px !important;
-    font-weight: 500 !important;
-    color: var(--text-secondary) !important;
-    background: transparent !important;
-    border: none !important;
-    border-radius: 10px !important;
-    padding: 10px 20px !important;
-    transition: var(--transition) !important;
-}
-.tab-nav button:hover {
-    background: var(--glass-hover) !important;
-    color: var(--text-primary) !important;
-}
-.tab-nav button.selected {
-    background: rgba(167, 139, 250, 0.12) !important;
-    color: var(--accent) !important;
-    box-shadow: 0 0 20px rgba(167, 139, 250, 0.08) !important;
-}
+label span, .label-wrap span { color: #9ca3af !important; font-size: 0.85rem !important; font-weight: 600 !important; text-transform: uppercase !important; letter-spacing: 0.05em !important; }
 
-/* ── 面板/卡片容器 ── */
-.block, .form, .panel {
-    background: var(--glass-bg) !important;
-    backdrop-filter: blur(var(--glass-blur)) !important;
-    -webkit-backdrop-filter: blur(var(--glass-blur)) !important;
-    border: 1px solid var(--glass-border) !important;
-    border-radius: var(--radius) !important;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
-    transition: var(--transition) !important;
-}
-.block:hover {
-    border-color: rgba(255, 255, 255, 0.1) !important;
-}
+button.primary { background: linear-gradient(135deg, #8b5cf6, #6366f1) !important; border: none !important; color: white !important; font-weight: 600 !important; padding: 12px 24px !important; border-radius: 8px !important; box-shadow: 0 4px 6px rgba(139,92,246,0.3) !important; }
+button.primary:hover { transform: translateY(-1px) !important; box-shadow: 0 6px 8px rgba(139,92,246,0.4) !important; }
+button.secondary { background-color: #1f2937 !important; color: #e5e7eb !important; border: 1px solid #374151 !important; border-radius: 8px !important; }
+button.secondary:hover { background-color: #374151 !important; }
 
-/* ── 输入框 ── */
-textarea, input[type="text"], .wrap input {
-    background: rgba(255, 255, 255, 0.03) !important;
-    border: 1px solid rgba(255, 255, 255, 0.08) !important;
-    border-radius: var(--radius-sm) !important;
-    color: var(--text-primary) !important;
-    font-family: 'SF Mono', 'JetBrains Mono', 'Fira Code', monospace !important;
-    font-size: 13px !important;
-    transition: var(--transition) !important;
-    caret-color: var(--accent) !important;
-}
-textarea:focus, input[type="text"]:focus {
-    border-color: rgba(167, 139, 250, 0.4) !important;
-    box-shadow: 0 0 0 3px rgba(167, 139, 250, 0.1), 0 0 20px rgba(167, 139, 250, 0.05) !important;
-    outline: none !important;
-}
-textarea::placeholder, input::placeholder {
-    color: var(--text-muted) !important;
-}
+.upload-container { background-color: #0f131d !important; border: 2px dashed #374151 !important; border-radius: 12px !important; min-height: 160px !important; }
+.upload-container:hover { border-color: #8b5cf6 !important; background-color: rgba(139,92,246,0.05) !important; }
 
-/* ── Label ── */
-label, .label-wrap span {
-    color: var(--text-secondary) !important;
-    font-weight: 500 !important;
-    font-size: 13px !important;
-    letter-spacing: 0.01em !important;
-}
+.gallery-item { border-radius: 8px !important; border: 1px solid #1f2937 !important; overflow: hidden !important; background-color: #030712 !important; }
+.gallery-item.selected { border-color: #8b5cf6 !important; box-shadow: 0 0 0 2px #8b5cf6 !important; }
 
-/* ── 按钮 ── */
-button.primary {
-    background: linear-gradient(135deg, rgba(139, 92, 246, 0.8), rgba(99, 102, 241, 0.8)) !important;
-    border: 1px solid rgba(167, 139, 250, 0.3) !important;
-    border-radius: var(--radius-sm) !important;
-    color: white !important;
-    font-weight: 600 !important;
-    font-size: 14px !important;
-    letter-spacing: 0.01em !important;
-    box-shadow: 0 4px 20px rgba(139, 92, 246, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.1) !important;
-    transition: var(--transition) !important;
-    backdrop-filter: blur(8px) !important;
-}
-button.primary:hover {
-    background: linear-gradient(135deg, rgba(139, 92, 246, 0.95), rgba(99, 102, 241, 0.95)) !important;
-    box-shadow: 0 8px 30px rgba(139, 92, 246, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.15) !important;
-    transform: translateY(-1px) !important;
-}
-button.primary:active {
-    transform: translateY(0) !important;
-}
+#smart-log textarea, #gen-status textarea { font-family: 'JetBrains Mono', monospace !important; font-size: 0.85rem !important; color: #a5f3fc !important; background-color: #0f172a !important; border: 1px solid #1e293b !important; }
 
-button.secondary {
-    background: rgba(255, 255, 255, 0.04) !important;
-    border: 1px solid rgba(255, 255, 255, 0.1) !important;
-    border-radius: var(--radius-sm) !important;
-    color: var(--text-primary) !important;
-    font-weight: 500 !important;
-    backdrop-filter: blur(8px) !important;
-    transition: var(--transition) !important;
-}
-button.secondary:hover {
-    background: rgba(255, 255, 255, 0.08) !important;
-    border-color: rgba(255, 255, 255, 0.18) !important;
-}
-
-button.lg {
-    padding: 14px 28px !important;
-    font-size: 15px !important;
-    border-radius: 12px !important;
-}
-
-/* ── Dropdown ── */
-.wrap .secondary-wrap, .wrap .dropdown {
-    background: rgba(255, 255, 255, 0.03) !important;
-    border: 1px solid rgba(255, 255, 255, 0.08) !important;
-    border-radius: var(--radius-sm) !important;
-    color: var(--text-primary) !important;
-}
-.wrap ul[role="listbox"] {
-    background: rgba(24, 24, 27, 0.95) !important;
-    backdrop-filter: blur(20px) !important;
-    border: 1px solid rgba(255, 255, 255, 0.1) !important;
-    border-radius: var(--radius-sm) !important;
-    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5) !important;
-}
-.wrap ul[role="listbox"] li {
-    color: var(--text-primary) !important;
-    transition: var(--transition) !important;
-}
-.wrap ul[role="listbox"] li:hover, .wrap ul[role="listbox"] li.selected {
-    background: rgba(167, 139, 250, 0.12) !important;
-    color: var(--accent) !important;
-}
-
-/* ── Gallery ── */
-.gallery-item {
-    background: var(--glass-bg) !important;
-    border: 1px solid var(--glass-border) !important;
-    border-radius: var(--radius-sm) !important;
-    overflow: hidden !important;
-    transition: var(--transition) !important;
-}
-.gallery-item:hover {
-    border-color: rgba(167, 139, 250, 0.3) !important;
-    box-shadow: 0 4px 20px rgba(167, 139, 250, 0.1) !important;
-    transform: scale(1.02) !important;
-}
-.gallery-item img {
-    border-radius: var(--radius-sm) !important;
-}
-
-/* ── 文件上传区 ── */
-.upload-container, .file-preview {
-    background: rgba(255, 255, 255, 0.02) !important;
-    border: 2px dashed rgba(255, 255, 255, 0.08) !important;
-    border-radius: var(--radius) !important;
-    transition: var(--transition) !important;
-}
-.upload-container:hover, .file-preview:hover {
-    border-color: rgba(167, 139, 250, 0.3) !important;
-    background: rgba(167, 139, 250, 0.03) !important;
-}
-
-/* ── 滚动条 ── */
-::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
-}
-::-webkit-scrollbar-track {
-    background: transparent;
-}
-::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.1);
-    border-radius: 3px;
-}
-::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 255, 255, 0.2);
-}
-
-/* ── Row / Column 间距优化 ── */
-.gap {
-    gap: 16px !important;
-}
-.contain > .block {
-    margin-bottom: 12px !important;
-}
-
-/* ── 状态信息 ── */
-.status-success {
-    color: #86efac !important;
-}
-.status-error {
-    color: #fca5a5 !important;
-}
-
-/* ── 隐藏 Gradio 默认 footer ── */
-footer {
-    display: none !important;
-}
+footer { display: none !important; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: #111827; }
+::-webkit-scrollbar-thumb { background: #374151; border-radius: 4px; }
 """
 
 
-# ─── Gradio UI ───
+# ─── UI ───
+
 
 def build_ui():
-    with gr.Blocks(
-        title="Style Template Tool",
-        theme=gr.themes.Base(
-            primary_hue=gr.themes.colors.violet,
-            secondary_hue=gr.themes.colors.zinc,
-            neutral_hue=gr.themes.colors.zinc,
-            font=gr.themes.GoogleFont("Inter"),
-            font_mono=gr.themes.GoogleFont("JetBrains Mono"),
-        ),
-        css=CUSTOM_CSS,
-    ) as app:
-        gr.Markdown("# Style Template Tool\n图集分析 → Prompt 融合 → 图片生成")
+    with gr.Blocks(title="Style Template Tool", theme=_midnight_theme(), css=CUSTOM_CSS) as app:
+        gr.Markdown(
+            "# Style Template Tool\n\n"
+            "图集风格提取  ·  Prompt 智能融合  ·  双参考图生成",
+            elem_id="header-block",
+        )
 
-        # ─── Tab 1：模板描述生成 ───
-        with gr.Tab("模板描述生成", id="tab-analyze"):
-            gr.Markdown("### 上传风格图集，AI 自动提取风格特征")
+        # Tab 1: 风格分析
+        with gr.Tab("风格分析"):
+            with gr.Row(equal_height=False):
+                with gr.Column(scale=2):
+                    upload_images = gr.File(label="上传参考图集（1~30 张）", file_count="multiple", file_types=["image"])
+                    with gr.Row():
+                        detailed_check = gr.Checkbox(label="详细分析（逐张分类 + 主体判断）", value=True)
+                        analyze_btn = gr.Button("开始分析", variant="primary")
+                with gr.Column(scale=3):
+                    desc_output = gr.Textbox(label="风格描述", lines=14, interactive=True, placeholder="上传图片后点击「开始分析」…")
 
-            with gr.Row():
-                with gr.Column(scale=1):
-                    upload_gallery = gr.File(
-                        label="上传风格图集（1-30 张）",
-                        file_count="multiple",
-                        file_types=["image"],
-                    )
-                    analyze_btn = gr.Button(
-                        "生成模板描述",
-                        variant="primary",
-                        size="lg",
-                    )
+            rep_gallery = gr.Gallery(label="代表图", columns=5, height=180, object_fit="cover")
+            analysis_output = gr.Textbox(label="逐张分析", lines=8, interactive=False, elem_id="analysis-box")
+            desc_hidden = gr.Textbox(visible=False)
 
-                with gr.Column(scale=1):
-                    desc_output = gr.Textbox(
-                        label="模板描述（可编辑）",
-                        lines=20,
-                        interactive=True,
-                        placeholder="上传图集后点击按钮，AI 将分析风格特征...",
-                    )
+            analyze_btn.click(fn=run_analysis, inputs=[upload_images, detailed_check], outputs=[desc_output, rep_gallery, desc_hidden, analysis_output])
 
-            rep_gallery = gr.Gallery(
-                label="代表图",
-                columns=3,
-                height=250,
-            )
-
-            desc_for_tab2 = gr.Textbox(visible=False)
-
-            analyze_btn.click(
-                fn=run_analysis,
-                inputs=[upload_gallery],
-                outputs=[desc_output, rep_gallery, desc_for_tab2],
-            )
-
-        # ─── Tab 2：融合 & 生成 ───
-        with gr.Tab("融合 & 生成", id="tab-fuse"):
-            gr.Markdown("### 输入你的创意，与模板风格融合后生成图片")
-
-            with gr.Row():
-                with gr.Column(scale=1):
-                    tab2_desc = gr.Textbox(
-                        label="模板描述",
-                        lines=10,
-                        interactive=True,
-                        placeholder="从第一步自动带入，也可手动编辑...",
-                    )
-                    user_prompt = gr.Textbox(
-                        label="用户 Prompt",
-                        lines=3,
-                        placeholder="描述你想生成的画面内容...",
-                    )
+        # Tab 2: 融合 & 生成
+        with gr.Tab("融合 & 生成"):
+            with gr.Row(equal_height=False):
+                with gr.Column(scale=3):
+                    tab2_desc = gr.Textbox(label="风格描述", lines=6, interactive=True, placeholder="从「风格分析」自动带入…")
+                    user_prompt = gr.Textbox(label="用户 Prompt", lines=3, placeholder="描述你想要生成的画面…")
                     fuse_btn = gr.Button("融合 Prompt", variant="secondary")
-                    fused_output = gr.Textbox(
-                        label="融合后的 Prompt（可微调）",
-                        lines=8,
-                        interactive=True,
-                    )
-
-                with gr.Column(scale=1):
-                    user_ref_upload = gr.File(
-                        label="用户参考图（可选）",
-                        file_count="multiple",
-                        file_types=["image"],
-                    )
-                    aspect_select = gr.Dropdown(
-                        label="宽高比",
-                        choices=["1:1", "16:9", "4:3", "3:2", "9:16", "3:4"],
-                        value="1:1",
-                    )
+                    fused_output = gr.Textbox(label="融合结果（可微调）", lines=5, interactive=True)
+                with gr.Column(scale=2):
+                    product_img = gr.Image(label="产品参考图（上传即启用双参考图模式）", type="filepath", height=180)
+                    aspect_select = gr.Dropdown(label="宽高比", choices=["1:1", "3:4", "4:3", "16:9", "9:16", "3:2"], value="1:1")
                     gen_btn = gr.Button("生成图片", variant="primary", size="lg")
-                    gen_status = gr.Textbox(label="状态", interactive=False)
+                    gen_status = gr.Textbox(label="状态", interactive=False, elem_id="gen-status")
 
-            gen_gallery = gr.Gallery(label="生成结果", columns=3, height=400)
-
+            gen_gallery = gr.Gallery(label="生成结果", columns=3, height=420, object_fit="contain")
             desc_output.change(fn=lambda x: x, inputs=[desc_output], outputs=[tab2_desc])
+            fuse_btn.click(fn=run_fusion, inputs=[tab2_desc, user_prompt], outputs=[fused_output])
+            gen_btn.click(fn=run_generate, inputs=[fused_output, product_img, aspect_select], outputs=[gen_gallery, gen_status])
 
-            fuse_btn.click(
-                fn=run_fusion,
-                inputs=[tab2_desc, user_prompt],
-                outputs=[fused_output],
-            )
+        # Tab 3: 智能套图
+        with gr.Tab("智能套图"):
+            with gr.Row(equal_height=False):
+                with gr.Column(scale=2):
+                    smart_refs = gr.File(label="参考图集", file_count="multiple", file_types=["image"])
+                with gr.Column(scale=1):
+                    smart_product = gr.Image(label="产品原图（可选）", type="filepath", height=160)
+                with gr.Column(scale=1):
+                    smart_name = gr.Textbox(label="产品 / 品牌名称", value="Product", lines=1)
+                    smart_aspect = gr.Dropdown(label="宽高比", choices=["1:1", "3:4", "4:3", "16:9", "9:16"], value="3:4")
+                    smart_btn = gr.Button("一键智能生成", variant="primary", size="lg")
 
-            gen_btn.click(
-                fn=run_generate,
-                inputs=[fused_output, user_ref_upload, aspect_select],
-                outputs=[gen_gallery, gen_status],
-            )
+            smart_log = gr.Textbox(label="生成日志", lines=12, interactive=False, elem_id="smart-log")
+            smart_gallery = gr.Gallery(label="生成结果", columns=4, height=420, object_fit="contain")
+            smart_desc = gr.Textbox(label="风格描述", lines=3, interactive=False)
 
-        # ─── Tab 3：批量测试 ───
-        with gr.Tab("批量测试", id="tab-batch"):
-            gr.Markdown("### 三组测试案例，快速验证风格一致性")
-
-            tab3_desc = gr.Textbox(
-                label="模板描述",
-                lines=6,
-                interactive=True,
-            )
-            desc_output.change(fn=lambda x: x, inputs=[desc_output], outputs=[tab3_desc])
-
-            batch_aspect = gr.Dropdown(
-                label="宽高比",
-                choices=["1:1", "16:9", "4:3", "3:2"],
-                value="1:1",
-            )
-
-            with gr.Row():
-                p1 = gr.Textbox(
-                    label="案例 1",
-                    lines=2,
-                    value="A serene mountain landscape at sunrise",
-                )
-                p2 = gr.Textbox(
-                    label="案例 2",
-                    lines=2,
-                    value="A cozy coffee shop interior with warm lighting",
-                )
-                p3 = gr.Textbox(
-                    label="案例 3",
-                    lines=2,
-                    value="A portrait of a young woman in a garden",
-                )
-
-            batch_btn = gr.Button("批量生成", variant="primary", size="lg")
-            batch_status = gr.Textbox(label="状态", interactive=False)
-
-            with gr.Row():
-                g1 = gr.Gallery(label="案例 1", columns=2, height=300)
-                g2 = gr.Gallery(label="案例 2", columns=2, height=300)
-                g3 = gr.Gallery(label="案例 3", columns=2, height=300)
-
-            batch_btn.click(
-                fn=run_batch,
-                inputs=[tab3_desc, p1, p2, p3, batch_aspect],
-                outputs=[g1, g2, g3, batch_status],
-            )
+            smart_btn.click(fn=run_smart_set, inputs=[smart_refs, smart_product, smart_name, smart_aspect], outputs=[smart_gallery, smart_log, smart_desc])
 
     return app
 
 
 if __name__ == "__main__":
     if not config.GEMINI_API_KEY:
-        print("\n  请先设置环境变量 GEMINI_API_KEY")
-        print("  export GEMINI_API_KEY='你的API Key'\n")
+        print("\n  请先设置 GEMINI_API_KEY（.env 文件或环境变量）")
+        print("  export GEMINI_API_KEY='your-key'\n")
         sys.exit(1)
 
     app = build_ui()
-    app.launch(
-        server_name="0.0.0.0",
-        server_port=7860,
-        share=False,
-    )
+    app.launch(server_name="0.0.0.0", server_port=7860, share=False)

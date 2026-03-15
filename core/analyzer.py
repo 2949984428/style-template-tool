@@ -1,109 +1,157 @@
 """
-阶段1：图集分析器
-输入风格图集，调用 Gemini 多模态分析，输出结构化模板描述 + 代表图编号
+图集分析器（合并 V1 + V2）
+- 基础模式 (默认): 返回 (description, rep_indices, rep_paths)
+- 详细模式 (detailed=True): 额外返回每张图的独立分类结果
 """
 
 import os
 import re
-import base64
-from PIL import Image
-from io import BytesIO
-from google import genai
+import json
 from google.genai import types
 
 import config
+from core.utils import image_to_part, get_client, get_logger, AnalysisError
+
+logger = get_logger("analyzer")
+
+PROMPTS_DIR = os.path.join(os.path.dirname(__file__), "..", "prompts")
 
 
-def _load_prompt():
-    """读取分析 prompt 模板"""
-    prompt_path = os.path.join(os.path.dirname(__file__), "..", "prompts", "analyze.txt")
-    with open(prompt_path, "r", encoding="utf-8") as f:
+def _load_prompt(version: str = "v1") -> str:
+    filename = "analyze_v2.txt" if version == "v2" else "analyze.txt"
+    path = os.path.join(PROMPTS_DIR, filename)
+    with open(path, "r", encoding="utf-8") as f:
         return f.read()
 
 
-def _image_to_part(image_path: str) -> types.Part:
-    """将图片文件转换为 Gemini API 的 Part 对象"""
-    with open(image_path, "rb") as f:
-        data = f.read()
-
-    # 检测 MIME 类型
-    ext = os.path.splitext(image_path)[1].lower()
-    mime_map = {
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".png": "image/png",
-        ".webp": "image/webp",
-        ".gif": "image/gif",
-    }
-    mime_type = mime_map.get(ext, "image/jpeg")
-
-    return types.Part.from_bytes(data=data, mime_type=mime_type)
-
-
-def _parse_representative_images(text: str) -> list[int]:
-    """从响应文本中解析代表图编号"""
+def _parse_representative_images(text: str) -> list:
     match = re.search(r"REPRESENTATIVE_IMAGES:\s*\[([^\]]+)\]", text)
     if match:
-        nums = re.findall(r"\d+", match.group(1))
-        return [int(n) for n in nums]
-    return [1]  # 默认选第一张
+        return [int(n) for n in re.findall(r"\d+", match.group(1))]
+    return [1]
 
 
-def analyze_images(image_paths: list[str]) -> tuple[str, list[int], list[str]]:
-    """
-    分析图集，返回 (模板描述文本, 代表图编号列表, 代表图路径列表)
+def _parse_json_response(text: str, image_count: int) -> tuple:
+    parsed = None
 
-    Args:
-        image_paths: 图片文件路径列表
+    for m in re.finditer(r'```json\s*\n(.*?)\n```', text, re.DOTALL):
+        try:
+            candidate = json.loads(m.group(1))
+            if isinstance(candidate, dict) and "per_image" in candidate:
+                parsed = candidate
+                break
+        except json.JSONDecodeError:
+            continue
 
-    Returns:
-        (description, representative_indices, representative_paths) - 
-        描述文本、代表图编号(1-based)、代表图路径列表
-    """
-    if not image_paths:
-        raise ValueError("请至少上传 1 张图片")
+    if parsed is None:
+        m = re.search(r'\{[\s\S]*?"per_image"[\s\S]*\}', text)
+        if m:
+            raw = m.group(0)
+            for end in range(len(raw), 0, -1):
+                try:
+                    candidate = json.loads(raw[:end])
+                    if isinstance(candidate, dict) and "per_image" in candidate:
+                        parsed = candidate
+                        break
+                except json.JSONDecodeError:
+                    continue
 
-    if len(image_paths) > config.MAX_IMAGES:
-        raise ValueError(f"图片数量超过限制，最多 {config.MAX_IMAGES} 张")
+    per_image = parsed.get("per_image", []) if parsed else []
+    overall = parsed.get("overall_style", {}) if parsed else {}
 
-    # 构建请求内容：prompt + 所有图片
-    system_prompt = _load_prompt()
+    default_item = {
+        "design_category": "ecommerce",
+        "has_subject": True,
+        "image_type": "product_hero",
+        "subject_description": "",
+    }
+    while len(per_image) < image_count:
+        per_image.append({**default_item, "image_index": len(per_image) + 1})
 
+    for item in per_image:
+        item.setdefault("design_category", "ecommerce")
+        item.setdefault("has_subject", True)
+        item.setdefault("image_type", "product_hero")
+        item.setdefault("subject_description", "")
+
+    return per_image, overall
+
+
+def _call_gemini(image_paths: list, system_prompt: str) -> str:
     parts = [types.Part.from_text(text=system_prompt)]
-
     for i, path in enumerate(image_paths, 1):
         parts.append(types.Part.from_text(text=f"\n--- 图片 #{i} ---"))
-        parts.append(_image_to_part(path))
-
+        parts.append(image_to_part(path))
     parts.append(types.Part.from_text(
         text=f"\n\n以上是全部 {len(image_paths)} 张图片，请开始分析。"
     ))
 
-    # 调用 Gemini
-    client = genai.Client(api_key=config.GEMINI_API_KEY)
-
+    client = get_client()
     response = client.models.generate_content(
         model=config.ANALYSIS_MODEL,
         contents=types.Content(parts=parts, role="user"),
-        config=types.GenerateContentConfig(
-            temperature=0.3,
-            max_output_tokens=4096,
-        ),
+        config=types.GenerateContentConfig(temperature=0.3, max_output_tokens=4096),
     )
+    return response.text
 
-    result_text = response.text
 
-    # 解析代表图编号
+def analyze_images(image_paths: list, detailed: bool = False) -> tuple:
+    """
+    基础模式: (description, rep_indices, rep_paths)
+    详细模式: (description, rep_indices, rep_paths, image_analysis_list)
+    """
+    if not image_paths:
+        raise AnalysisError("请至少上传 1 张图片")
+    if len(image_paths) > config.MAX_IMAGES:
+        raise AnalysisError(f"图片数量超过限制，最多 {config.MAX_IMAGES} 张")
+
+    version = "v2" if detailed else "v1"
+    logger.info("分析 %d 张图片 (mode=%s)", len(image_paths), version)
+    system_prompt = _load_prompt(version)
+    result_text = _call_gemini(image_paths, system_prompt)
+    logger.debug("Gemini 返回 %d 字符", len(result_text))
+
     rep_indices = _parse_representative_images(result_text)
 
-    # 清理描述文本（去掉 REPRESENTATIVE_IMAGES 行）
-    description = re.sub(
-        r"\n*REPRESENTATIVE_IMAGES:\s*\[[^\]]*\]\s*",
-        "",
-        result_text,
-    ).strip()
+    description = re.sub(r"\n*REPRESENTATIVE_IMAGES:\s*\[[^\]]*\]\s*", "", result_text)
+    if detailed:
+        description = re.sub(r'```json\s*\n.*?\n```', '', description, flags=re.DOTALL)
+        description = re.sub(r'\{[\s\S]*?"per_image"[\s\S]*?\}(?:\s*\})?', '', description)
+    description = description.strip()
 
-    # 获取代表图路径（用于后续作为风格参考图）
-    rep_paths = [image_paths[i-1] for i in rep_indices if 1 <= i <= len(image_paths)]
+    rep_paths = [image_paths[i - 1] for i in rep_indices if 1 <= i <= len(image_paths)]
 
-    return description, rep_indices, rep_paths
+    if not detailed:
+        return description, rep_indices, rep_paths
+
+    per_image_list, overall_style = _parse_json_response(result_text, len(image_paths))
+
+    analysis_list = []
+    for i, path in enumerate(image_paths):
+        item = per_image_list[i] if i < len(per_image_list) else {}
+        item["image_path"] = path
+        item["image_index"] = i + 1
+        item["is_representative"] = (i + 1) in rep_indices
+        item["overall_style"] = overall_style
+        analysis_list.append(item)
+
+    return description, rep_indices, rep_paths, analysis_list
+
+
+def analyze_single_image(image_path: str) -> dict:
+    description, _, _, analysis_list = analyze_images([image_path], detailed=True)
+    if analysis_list:
+        result = analysis_list[0]
+        result["full_description"] = description
+        return result
+    return {
+        "design_category": "ecommerce",
+        "has_subject": True,
+        "image_type": "product_hero",
+        "subject_description": "",
+        "overall_style": {},
+        "image_path": image_path,
+        "image_index": 1,
+        "is_representative": True,
+        "full_description": description,
+    }

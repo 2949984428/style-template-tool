@@ -1,6 +1,6 @@
 import os
 
-# 手动加载 .env 文件
+
 def _load_env():
     env_path = os.path.join(os.path.dirname(__file__), ".env")
     if os.path.exists(env_path):
@@ -11,15 +11,15 @@ def _load_env():
                     key, value = line.split("=", 1)
                     os.environ.setdefault(key.strip(), value.strip())
 
+
 _load_env()
 
-# Gemini API 配置
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 # 模型配置
-ANALYSIS_MODEL = "gemini-2.0-flash"   # 图集分析（多模态文本）
-FUSION_MODEL = "gemini-2.0-flash"     # prompt 融合（文本）
-IMAGE_MODEL = "gemini-3.1-flash-image-preview"  # 图片生成（支持图片输出）
+ANALYSIS_MODEL = "gemini-2.5-flash"
+FUSION_MODEL = "gemini-2.5-flash"
+IMAGE_MODEL = "gemini-2.0-flash-preview-image-generation"
 
 # 输出目录
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "outputs")

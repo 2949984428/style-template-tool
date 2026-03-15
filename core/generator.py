@@ -5,96 +5,75 @@
 
 import os
 import time
+from io import BytesIO
 from PIL import Image
-from google import genai
 from google.genai import types
 
 import config
+from core.utils import read_image_bytes, get_client, get_logger, GenerationError
+
+logger = get_logger("generator")
 
 
 def generate_image(
     prompt: str,
-    style_references: list[str] = None,
+    style_references: list = None,
     product_reference: str = None,
     aspect_ratio: str = None,
-) -> list[str]:
+) -> list:
     """
-    调用 Gemini 生成图片（双参考图模式）
+    调用 Gemini 生成图片（双参考图模式）。
 
     Args:
         prompt: 最终融合后的生图 prompt
-        style_references: 风格参考图路径列表（来自模板的代表图）
-        product_reference: 产品参考图路径（用户上传的产品图）
-        aspect_ratio: 宽高比，如 "1:1", "16:9", "4:3"
+        style_references: 风格参考图路径列表
+        product_reference: 产品参考图路径（用于主体复原）
+        aspect_ratio: 宽高比，如 "1:1", "16:9", "3:4"
 
     Returns:
         生成的图片保存路径列表
     """
     if not prompt.strip():
-        raise ValueError("生成 prompt 不能为空")
+        raise GenerationError("生成 prompt 不能为空")
 
     aspect_ratio = aspect_ratio or config.DEFAULT_ASPECT_RATIO
+    logger.info(
+        "生成图片 (ratio=%s, style_refs=%d, product_ref=%s)",
+        aspect_ratio,
+        len(style_references) if style_references else 0,
+        "yes" if product_reference else "no",
+    )
 
-    # 构建请求内容 - 双参考图模式
-    # 风格参考图（style_references）+ 产品参考图（product_reference）
-    parts = []
-    
-    # 首先添加明确的生成指令（英文效果更好）
-    parts.append(types.Part.from_text(
-        text=f"Create a professional product photograph: {prompt}"
-    ))
+    parts = [
+        types.Part.from_text(text=f"Create a professional product photograph: {prompt}")
+    ]
 
-    # 添加风格参考图（作为风格参考 - 学习视觉风格）
     if style_references:
         parts.append(types.Part.from_text(
             text="\nStyle reference images (learn the visual style from these):"
         ))
         for img_path in style_references:
-            with open(img_path, "rb") as f:
-                data = f.read()
-            ext = os.path.splitext(img_path)[1].lower()
-            mime_map = {
-                ".jpg": "image/jpeg",
-                ".jpeg": "image/jpeg",
-                ".png": "image/png",
-                ".webp": "image/webp",
-            }
-            mime_type = mime_map.get(ext, "image/jpeg")
+            data, mime_type = read_image_bytes(img_path)
             parts.append(types.Part.from_bytes(data=data, mime_type=mime_type))
 
-    # 添加产品参考图（作为 object fidelity - 保持产品一致性）
     if product_reference and os.path.exists(product_reference):
         parts.append(types.Part.from_text(
             text="\nProduct reference image (maintain this exact product):"
         ))
-        with open(product_reference, "rb") as f:
-            data = f.read()
-        ext = os.path.splitext(product_reference)[1].lower()
-        mime_map = {
-            ".jpg": "image/jpeg",
-            ".jpeg": "image/jpeg",
-            ".png": "image/png",
-            ".webp": "image/webp",
-        }
-        mime_type = mime_map.get(ext, "image/jpeg")
+        data, mime_type = read_image_bytes(product_reference)
         parts.append(types.Part.from_bytes(data=data, mime_type=mime_type))
 
-    # 调用 Gemini 图片生成
-    client = genai.Client(api_key=config.GEMINI_API_KEY)
-
+    client = get_client()
     response = client.models.generate_content(
         model=config.IMAGE_MODEL,
         contents=types.Content(parts=parts, role="user"),
         config=types.GenerateContentConfig(
             response_modalities=["TEXT", "IMAGE"],
             temperature=0.8,
-            image_config=types.ImageConfig(
-                aspect_ratio=aspect_ratio,
-            ),
+            image_config=types.ImageConfig(aspect_ratio=aspect_ratio),
         ),
     )
 
-    # 解析响应，提取生成的图片
     os.makedirs(config.OUTPUT_DIR, exist_ok=True)
     saved_paths = []
     timestamp = int(time.time())
@@ -104,19 +83,13 @@ def generate_image(
             ext = ".png" if "png" in part.inline_data.mime_type else ".jpg"
             filename = f"generated_{timestamp}_{i}{ext}"
             filepath = os.path.join(config.OUTPUT_DIR, filename)
-
-            # 从 base64 数据保存图片
-            image = Image.open(
-                __import__("io").BytesIO(part.inline_data.data)
-            )
+            image = Image.open(BytesIO(part.inline_data.data))
             image.save(filepath)
             saved_paths.append(filepath)
 
     if not saved_paths:
-        # 如果没有图片，可能模型返回了纯文本
         text_parts = [p.text for p in response.candidates[0].content.parts if p.text]
-        raise RuntimeError(
-            f"模型未返回图片。模型回复：{''.join(text_parts)}"
-        )
+        raise GenerationError(f"模型未返回图片。模型回复：{''.join(text_parts)}")
 
+    logger.info("生成完成，共 %d 张图片", len(saved_paths))
     return saved_paths
