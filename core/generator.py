@@ -30,7 +30,6 @@ def _image_to_inline_data(image_path: str) -> dict:
 
 def generate_image(
     prompt: str,
-    style_references: list = None,
     product_reference: str = None,
     aspect_ratio: str = None,
     image_size: str = None,
@@ -38,11 +37,13 @@ def generate_image(
     """
     直接调用 Gemini REST API 生成图片。
 
+    风格通过 prompt 文字传递（来自 fusion 阶段），不通过参考图。
+    product_reference 仅用于让模型保持产品外观一致。
+
     Args:
-        prompt: 最终融合后的生图 prompt
-        style_references: 风格参考图路径列表
-        product_reference: 产品参考图路径（用于主体复原）
-        aspect_ratio: 宽高比，如 "1:1", "16:9", "3:4"
+        prompt: 融合后的生图 prompt（已包含风格描述）
+        product_reference: 产品原图路径（has_subject=true 时使用）
+        aspect_ratio: 宽高比
         image_size: 分辨率 "512", "1K", "2K", "4K"
     """
     if not prompt.strip():
@@ -50,39 +51,25 @@ def generate_image(
 
     aspect_ratio = aspect_ratio or config.DEFAULT_ASPECT_RATIO
     image_size = image_size or config.DEFAULT_IMAGE_SIZE
-    n_style = len(style_references) if style_references else 0
 
     logger.info(
-        "生成图片 (ratio=%s, size=%s, style_refs=%d, product_ref=%s)",
-        aspect_ratio, image_size, n_style,
+        "生成图片 (ratio=%s, size=%s, product_ref=%s)",
+        aspect_ratio, image_size,
         "yes" if product_reference else "no",
     )
 
-    # 构建 parts：图片在前，文本指令在后（官方推荐）
     parts = []
-
-    if style_references:
-        for img_path in style_references:
-            parts.append(_image_to_inline_data(img_path))
 
     if product_reference and os.path.exists(product_reference):
         parts.append(_image_to_inline_data(product_reference))
-
-    if style_references and product_reference:
-        style_label = f"the first {n_style} images" if n_style > 1 else "the first image"
         instruction = (
-            f"Using the visual style, color palette, lighting, and texture from {style_label} as style reference, "
-            f"and maintaining the exact product appearance from the last image, "
-            f"create a professional product photograph: {prompt}"
-        )
-    elif style_references:
-        style_label = f"the provided {n_style} reference images" if n_style > 1 else "the provided reference image"
-        instruction = (
-            f"Using the visual style, color palette, lighting, and texture from {style_label}, "
-            f"create a professional product illustration: {prompt}"
+            f"Create a new product photograph using the provided product image as the subject. "
+            f"Maintain the exact product appearance (shape, label, colors, logo) from the image. "
+            f"Do NOT copy any text, branding, or layout from anywhere else. "
+            f"Apply the following visual style to create a completely new composition:\n\n{prompt}"
         )
     else:
-        instruction = f"Create a professional product photograph: {prompt}"
+        instruction = prompt
 
     parts.append({"text": instruction})
 
