@@ -69,13 +69,42 @@ def _get_intent(has_subject: bool, category: str, image_type: str, product_name:
     return template.format(name=product_name)
 
 
-def _build_rich_style_description(style_info: dict, analysis_list: list, fallback: str) -> str:
+def _build_rich_style_description(style_info: dict, analysis_list: list, fallback: str,
+                                   style_refs: list = None) -> str:
     """
     从 overall_style 的详细字段 + 逐图 style_traits 组装完整风格描述。
-    包含归因信息（哪个特征来自哪张图），供 Sandwich Strategy fusion 使用。
+
+    关键：将分析阶段的"图#N"编号重映射为实际传给 generator 的"Style Reference N"编号，
+    确保 fusion prompt 中的归因与 generator parts 中的图片顺序一致。
+
+    Args:
+        style_refs: 实际传给 generator 的风格参考图路径列表，用于编号映射
     """
     if not style_info:
         return fallback
+
+    # 构建映射：原始图片路径 → Style Reference 编号
+    ref_mapping = {}
+    if style_refs:
+        for sr_idx, sr_path in enumerate(style_refs):
+            ref_mapping[os.path.abspath(sr_path)] = f"Style Reference {sr_idx + 1}"
+
+    def _remap_source(source_text: str) -> str:
+        """将 '图#1, #3, #5' 格式的引用重映射为 'Style Reference N' 格式。"""
+        if not source_text or not ref_mapping or not analysis_list:
+            return source_text
+        import re
+        indices = re.findall(r'#(\d+)', source_text)
+        mapped = []
+        for idx_str in indices:
+            idx = int(idx_str)
+            for item in analysis_list:
+                if item.get("image_index") == idx:
+                    abs_path = os.path.abspath(item["image_path"])
+                    if abs_path in ref_mapping:
+                        mapped.append(ref_mapping[abs_path])
+                    break
+        return ", ".join(mapped) if mapped else source_text
 
     parts = []
     summary = style_info.get("style_description", "")
@@ -95,17 +124,21 @@ def _build_rich_style_description(style_info: dict, analysis_list: list, fallbac
         if val and val != summary:
             source = style_info.get(source_key, "") if source_key else ""
             if source:
-                parts.append(f"{label}: {val} (source: {source})")
+                remapped = _remap_source(source)
+                parts.append(f"{label}: {val} (source: {remapped})")
             else:
                 parts.append(f"{label}: {val}")
 
-    if analysis_list:
+    if analysis_list and style_refs:
         trait_lines = []
         for item in analysis_list:
             traits = item.get("style_traits", [])
-            if traits:
-                idx = item.get("image_index", "?")
-                trait_lines.append(f"Image #{idx} traits: {', '.join(traits)}")
+            if not traits:
+                continue
+            abs_path = os.path.abspath(item["image_path"])
+            sr_label = ref_mapping.get(abs_path)
+            if sr_label:
+                trait_lines.append(f"{sr_label} traits: {', '.join(traits)}")
         if trait_lines:
             parts.append("Per-image style traits:\n" + "\n".join(trait_lines))
 
@@ -146,8 +179,6 @@ def smart_generate_set(
         logger.info("  #%d [%s] %s  has_subject=%s", idx, cat, typ, has)
 
     style_info = analysis_list[0].get("overall_style", {}) if analysis_list else {}
-    style_text = _build_rich_style_description(style_info, analysis_list, description[:500])
-    logger.info("风格描述长度: %d 字符", len(style_text))
 
     # ── 阶段2+3：逐张融合 + 生成（文+图一起传） ──
     logger.info("═══ 阶段2+3：逐张融合 & 生成 ═══")
@@ -166,6 +197,9 @@ def smart_generate_set(
         style_refs = list(rep_paths)
         if ref_path not in style_refs:
             style_refs.append(ref_path)
+
+        # 每次用当前 style_refs 重建风格描述，确保"Style Reference N"编号与 generator 一致
+        style_text = _build_rich_style_description(style_info, analysis_list, description[:500], style_refs=style_refs)
 
         intent = _get_intent(has_subject, category, image_type, product_name)
 

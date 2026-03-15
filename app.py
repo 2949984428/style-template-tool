@@ -169,7 +169,6 @@ def run_smart_set(ref_images, product_img, product_name, aspect):
     yield [], "\n".join(log_lines), desc
 
     style_info = a_list[0].get("overall_style", {}) if a_list else {}
-    style_text = _build_rich_style_description(style_info, a_list, desc[:500])
     all_results = []
 
     for item in a_list:
@@ -183,6 +182,7 @@ def run_smart_set(ref_images, product_img, product_name, aspect):
         if ref_path not in style_refs:
             style_refs.append(ref_path)
 
+        style_text = _build_rich_style_description(style_info, a_list, desc[:500], style_refs=style_refs)
         intent = _get_intent(has_subject, category, image_type, name)
 
         try:
