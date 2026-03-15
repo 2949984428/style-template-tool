@@ -55,15 +55,15 @@ def generate_image(
         "yes" if product_reference else "no",
     )
 
-    # ── 构建 parts：参考图 → 产品图 → 文本指令 ──
+    # ── 构建 parts：产品图(Image 1) → 风格参考图 → 文本指令 ──
     parts = []
+
+    if product_reference and os.path.exists(product_reference):
+        parts.append(_image_to_inline_data(product_reference))
 
     if style_references:
         for img_path in style_references:
             parts.append(_image_to_inline_data(img_path))
-
-    if product_reference and os.path.exists(product_reference):
-        parts.append(_image_to_inline_data(product_reference))
 
     instruction = _build_instruction(prompt, n_style, product_reference)
     parts.append({"text": instruction})
@@ -131,23 +131,23 @@ def _build_instruction(prompt: str, n_style: int, product_reference: str) -> str
     """
 
     if n_style > 0 and product_reference:
-        ref_labels = ", ".join(f"Reference Image {i+1}" for i in range(n_style))
+        ref_labels = ", ".join(f"Style Reference {i+1}" for i in range(n_style))
         return (
             f"[IMAGE ROLES]\n"
-            f"- Images 1-{n_style}: STYLE REFERENCES ({ref_labels})\n"
-            f"- Image {n_style + 1}: PRODUCT — preserve its exact appearance (shape, label, packaging text, colors)\n"
+            f"- Image 1: PRODUCT (the item to photograph) — preserve its exact appearance (shape, label, packaging text, colors)\n"
+            f"- Images 2-{n_style + 1}: STYLE REFERENCES ({ref_labels})\n"
             f"\n"
             f"[HARD CONSTRAINTS]\n"
+            f"- The output must feature ONLY the product from Image 1.\n"
             f"- Do NOT copy any text, brand names, logos, slogans, or graphic elements from the style references.\n"
             f"- Do NOT reproduce the specific product/packaging shown in the style references.\n"
-            f"- The output must feature ONLY the product from the PRODUCT image.\n"
             f"\n"
             f"[GENERATION PROMPT]\n"
             f"{prompt}"
         )
 
     elif n_style > 0:
-        ref_labels = ", ".join(f"Reference Image {i+1}" for i in range(n_style))
+        ref_labels = ", ".join(f"Style Reference {i+1}" for i in range(n_style))
         return (
             f"[IMAGE ROLES]\n"
             f"- Images 1-{n_style}: STYLE REFERENCES ({ref_labels})\n"

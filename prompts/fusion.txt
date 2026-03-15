@@ -28,15 +28,16 @@ Build the final prompt with exactly THREE layers, in this order:
 - Write it as if describing a photograph to someone who will recreate it.
 
 ### LAYER 2 — Strict Reference Anchor
-- Write a single directive sentence that anchors the generation to the reference images.
+- Write a single directive sentence that anchors the generation to the style reference images.
 - Format: "Strictly apply the visual style derived from the style reference images. The output must look like it belongs to the same visual series as the references."
-- If there are multiple reference images, say "Reference Image 1, Reference Image 2, ..." to map them in order.
+- If there are multiple style reference images, say "Style Reference 1, Style Reference 2, ..." to map them in order.
+- IMPORTANT: The product image (Image 1) is NOT a style reference. Style references start from Image 2.
 
 ### LAYER 3 — Narrative Style Blueprint (MOST CRITICAL)
 - Convert the Style Analysis into a **fluid, descriptive paragraph** (NOT a keyword list).
-- **ATTRIBUTION RULE**: When describing a style trait, **you MUST cite which Reference Image it comes from**.
+- **ATTRIBUTION RULE**: When describing a style trait, **you MUST cite which Style Reference it comes from**.
   - BAD: "The lighting is soft and diffused."
-  - GOOD: "The scene bathes in the soft, diffused studio lighting characteristic of Reference Image 1, where gentle highlights wrap around surfaces without harsh shadows."
+  - GOOD: "The scene bathes in the soft, diffused studio lighting characteristic of Style Reference 1, where gentle highlights wrap around surfaces without harsh shadows."
 - Cover these dimensions in natural sentences:
   1. Color palette and color grading (cite source)
   2. Lighting setup and shadow quality (cite source)
@@ -60,16 +61,16 @@ Build the final prompt with exactly THREE layers, in this order:
 
 ## Example Output Structure (showing the flow, not exact content)
 
-"[2-3 sentences describing the subject and scene vividly]. Strictly apply the visual style derived from the style reference images; the result must look like it belongs to the same visual series. [6-10 sentences describing the style dimensions narratively: The scene adopts the muted blue-grey palette characteristic of Reference Image 1, where cool undertones create a clinical yet approachable atmosphere... The lighting follows the soft diffused studio setup seen prominently in Reference Image 2, where gentle highlights wrap around transparent glass surfaces... The material rendering draws from the translucent gel textures of Reference Image 3, emphasizing a dewy, crystalline clarity...]. The image is presented without any text overlays, brand logos, or graphic elements."
+"[2-3 sentences describing the subject and scene vividly]. Strictly apply the visual style derived from the style reference images; the result must look like it belongs to the same visual series. [6-10 sentences describing the style dimensions narratively: The scene adopts the muted blue-grey palette characteristic of Style Reference 1, where cool undertones create a clinical yet approachable atmosphere... The lighting follows the soft diffused studio setup seen prominently in Style Reference 2, where gentle highlights wrap around transparent glass surfaces... The material rendering draws from the translucent gel textures of Style Reference 3, emphasizing a dewy, crystalline clarity...]. The image is presented without any text overlays, brand logos, or graphic elements."
 
 ## CRITICAL LENGTH REQUIREMENT
 
 Your output MUST contain at least 200 words and ideally 300+ words. Responses shorter than 200 words are UNACCEPTABLE and will be rejected. The Layer 3 (Style Blueprint with attribution) alone should be at least 150 words.
 
 If your draft is too short, expand Layer 3 by adding more detail about:
-- How the color palette manifests on specific surfaces (citing Reference Image source)
-- Exactly how the lighting creates highlights and shadows (citing Reference Image source)
-- The precise texture and material quality of surfaces (citing Reference Image source)
+- How the color palette manifests on specific surfaces (citing Style Reference source)
+- Exactly how the lighting creates highlights and shadows (citing Style Reference source)
+- The precise texture and material quality of surfaces (citing Style Reference source)
 - The emotional atmosphere and how it connects to the visual elements
 
 ## Output
